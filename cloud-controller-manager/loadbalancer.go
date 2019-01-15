@@ -423,7 +423,7 @@ func (s *LoadBalancerClient) UpdateBackendServers(nodes []*v1.Node, lb *slb.Load
 				break
 			}
 		}
-		if !found {
+		if !found && id != "" {
 			additions = append(additions, slb.BackendServerType{ServerId: string(id), Weight: DEFAULT_SERVER_WEIGHT})
 		}
 	}
