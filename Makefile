@@ -7,7 +7,7 @@
 REGISTRY?=registry.cn-hangzhou.aliyuncs.com/google-containers/cloud-controller-manager-amd64
 
 # Default tag and architecture. Can be overridden
-TAG?=$(shell git describe --tags)
+TAG?=$(shell git describe --tags --always)
 ARCH?=amd64
 
 # Set the (cross) compiler to use for different architectures
