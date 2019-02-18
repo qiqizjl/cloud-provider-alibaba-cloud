@@ -23,11 +23,11 @@ import (
 	"strings"
 
 	"encoding/json"
+
 	"github.com/denverdino/aliyungo/common"
 	"github.com/denverdino/aliyungo/slb"
 	"github.com/golang/glog"
 	"k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/kubernetes/pkg/cloudprovider"
 )
 
@@ -220,6 +220,35 @@ func (s *LoadBalancerClient) findLoadBalancerByName(name string) (bool, *slb.Loa
 	return err == nil, lb, err
 }
 
+// getLoadBalancerAdditionalTags converts the comma separated list of key-value
+// pairs in the ServiceAnnotationLoadBalancerAdditionalTags annotation and returns
+// it as a map.
+func getLoadBalancerAdditionalTags(annotations map[string]string) map[string]string {
+	additionalTags := make(map[string]string)
+	if additionalTagsList, ok := annotations[ServiceAnnotationLoadBalancerAdditionalTags]; ok {
+		additionalTagsList = strings.TrimSpace(additionalTagsList)
+
+		// Break up list of "Key1=Val,Key2=Val2"
+		tagList := strings.Split(additionalTagsList, ",")
+
+		// Break up "Key=Val"
+		for _, tagSet := range tagList {
+			tag := strings.Split(strings.TrimSpace(tagSet), "=")
+
+			// Accept "Key=val" or "Key=" or just "Key"
+			if len(tag) >= 2 && len(tag[0]) != 0 {
+				// There is a key and a value, so save it
+				additionalTags[tag[0]] = tag[1]
+			} else if len(tag) == 1 && len(tag[0]) != 0 {
+				// Just "Key"
+				additionalTags[tag[0]] = ""
+			}
+		}
+	}
+
+	return additionalTags
+}
+
 func (s *LoadBalancerClient) EnsureLoadBalancer(service *v1.Service, nodes []*v1.Node, vswitchid string) (*slb.LoadBalancerType, error) {
 	glog.V(4).Infof("alicloud: ensure loadbalancer with service details, \n%+v", PrettyJson(service))
 
@@ -256,25 +285,31 @@ func (s *LoadBalancerClient) EnsureLoadBalancer(service *v1.Service, nodes []*v1
 			return nil, err
 		}
 
-		// Tag the loadbalancer.
-		items, err := json.Marshal(
-			[]slb.TagItem{
-				{
-					TagKey:   TAGKEY,
-					TagValue: opts.LoadBalancerName,
-				},
-			},
-		)
+		//deal with loadBalancer tags
+		tags := getLoadBalancerAdditionalTags(getBackwardsCompatibleAnnotation(service.Annotations))
+		loadbalancerName := cloudprovider.GetLoadBalancerName(service)
+		// Add default tags
+		tags[TAGKEY] = loadbalancerName
+
+		tagItemArr := make([]slb.TagItem, 0)
+		for key, value := range tags {
+			tagItemArr = append(tagItemArr, slb.TagItem{TagKey: key, TagValue: value})
+		}
+		// TODO if the key size or value size > slb's tag limit or number of tags  >limit(20), tags will insert error.
+
+		tagItems, err := json.Marshal(tagItemArr)
+
 		if err != nil {
 			return nil, err
 		}
 		if err := s.c.AddTags(&slb.AddTagsArgs{
 			RegionId:       opts.RegionId,
 			LoadBalancerID: lbr.LoadBalancerId,
-			Tags:           string(items),
+			Tags:           string(tagItems),
 		}); err != nil {
 			return nil, err
 		}
+
 		origined, err = s.c.DescribeLoadBalancerAttribute(lbr.LoadBalancerId)
 	} else {
 		needUpdate, charge, bandwidth := false, origined.InternetChargeType, origined.Bandwidth
@@ -411,14 +446,14 @@ func (s *LoadBalancerClient) UpdateBackendServers(nodes []*v1.Node, lb *slb.Load
 	// checkout for newly added servers
 	for _, n1 := range nodes {
 		found := false
-		_, id, err := nodeinfo(types.NodeName(n1.Spec.ProviderID))
+		_, id, err := nodeFromProviderID(n1.Spec.ProviderID)
 		for _, n2 := range lb.BackendServers.BackendServer {
 			if err != nil {
 				glog.Errorf("alicloud: node providerid=%s is not"+
 					" in the correct form, expect regionid.instanceid. skip add op", n1.Spec.ProviderID)
 				continue
 			}
-			if string(id) == n2.ServerId {
+			if id == n2.ServerId {
 				found = true
 				break
 			}
@@ -435,11 +470,11 @@ func (s *LoadBalancerClient) UpdateBackendServers(nodes []*v1.Node, lb *slb.Load
 			if len(additions) > MAX_LOADBALANCER_BACKEND {
 				target = additions[0:MAX_LOADBALANCER_BACKEND]
 				additions = additions[MAX_LOADBALANCER_BACKEND:]
-				glog.V(5).Infof("alicloud: batch add backend servers, %s", target)
+				glog.V(5).Infof("alicloud: batch add backend servers, %v", target)
 			} else {
 				target = additions
 				additions = []slb.BackendServerType{}
-				glog.V(5).Infof("alicloud: batch add backend servers, else %s", target)
+				glog.V(5).Infof("alicloud: batch add backend servers, else %v", target)
 			}
 			if _, err := s.c.AddBackendServers(lb.LoadBalancerId, target); err != nil {
 				return err
@@ -451,13 +486,13 @@ func (s *LoadBalancerClient) UpdateBackendServers(nodes []*v1.Node, lb *slb.Load
 	for _, n1 := range lb.BackendServers.BackendServer {
 		found := false
 		for _, n2 := range nodes {
-			_, id, err := nodeinfo(types.NodeName(n2.Spec.ProviderID))
+			_, id, err := nodeFromProviderID(n2.Spec.ProviderID)
 			if err != nil {
 				glog.Errorf("alicloud: node providerid=%s is not "+
 					"in the correct form, expect regionid.instanceid.. skip delete op... [%s]", n2.Spec.ProviderID, err.Error())
 				continue
 			}
-			if n1.ServerId == string(id) {
+			if n1.ServerId == id {
 				found = true
 				break
 			}
