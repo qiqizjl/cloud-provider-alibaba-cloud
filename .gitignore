@@ -1,5 +1,5 @@
 .idea
-./build/alicloud-controller-manager
+build/cloud-controller-manager*
 projectFilesBackup/
 
 alicloud-controller-manager
