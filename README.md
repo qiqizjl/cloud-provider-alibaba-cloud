@@ -1,3 +1,4 @@
+**阿里云官方已支持本repo的特性。故不再维护**
 # 关于这个仓库
 这个repo由[kubernetes/cloud-provider-alibaba-cloud](https://github.com/kubernetes/cloud-provider-alibaba-cloud) fork
 出来
