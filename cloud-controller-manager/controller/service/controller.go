@@ -758,7 +758,11 @@ func NodeConditionPredicate(svc *v1.Service) (NodeConditionPredicateFunc, error)
 		// it unschedulable. Recognize nodes labeled as master, and filter
 		// them also, as we were doing previously.
 		if _, isMaster := node.Labels[LabelNodeRoleMaster]; isMaster {
-			return false
+			utils.Logf(svc, "svc %v check node role  %v ",svc.Name, node.Name)
+			if svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeCluster {
+				utils.Logf(svc, "ignoring master node %v condition check", node.Name)
+				return false
+			}
 		}
 
 		// ignore eci node condition check
