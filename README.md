@@ -1,4 +1,3 @@
-**阿里云官方已支持本repo的特性。故不再维护**
 # 关于这个仓库
 这个repo由[kubernetes/cloud-provider-alibaba-cloud](https://github.com/kubernetes/cloud-provider-alibaba-cloud) fork
 出来
@@ -6,7 +5,6 @@
 ## 增加特性
 本仓库增加以下特性
 - 支持Local模式下SLB挂载到master节点
-- 解决使用ECI虚拟节点下报错的问题
 
 # Kubernetes Cloud Controller Manager for Alibaba Cloud
 
