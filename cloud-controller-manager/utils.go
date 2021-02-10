@@ -17,7 +17,11 @@ limitations under the License.
 package alicloud
 
 import (
+	"fmt"
+	"github.com/docker/distribution/uuid"
 	"k8s.io/api/core/v1"
+	"k8s.io/klog"
+	"strings"
 	"sync"
 )
 
@@ -39,15 +43,16 @@ type kvstore struct {
 	lock  sync.RWMutex
 }
 
+func InitCache() {
+	versionCache = &localService{
+		maxResourceVersion: map[string]bool{},
+	}
+	serviceCache = &kvstore{
+		store: map[string]int64{},
+	}
+}
 func init() {
-	once.Do(func() {
-		versionCache = &localService{
-			maxResourceVersion: map[string]bool{},
-		}
-		serviceCache = &kvstore{
-			store: map[string]int64{},
-		}
-	})
+	once.Do(InitCache)
 }
 
 // GetPrivateZoneRecordCache return record cache
@@ -102,7 +107,17 @@ func NodeList(nodes []*v1.Node) []string {
 	return ns
 }
 
-// Contains contains in
+func EndpointIpsList(nodes *v1.Endpoints) []string {
+	var ips []string
+	for _, ep := range nodes.Subsets {
+		for _, addr := range ep.Addresses {
+			ips = append(ips, addr.IP)
+		}
+	}
+	return ips
+}
+
+// Contains containsLabel in
 func Contains(list []int, x int) bool {
 	for _, item := range list {
 		if item == x {
@@ -110,4 +125,34 @@ func Contains(list []int, x int) bool {
 		}
 	}
 	return false
+}
+
+func newid() string {
+	return fmt.Sprintf("lb-%s", strings.ToLower(uuid.Generate().String())[0:15])
+}
+
+func ServiceModeLocal(svc *v1.Service) bool {
+	return svc.Spec.ExternalTrafficPolicy == v1.ServiceExternalTrafficPolicyTypeLocal
+}
+
+func GetLoadBalancerName(service *v1.Service) string {
+	//GCE requires that the name of a load balancer starts with a lower case letter.
+	ret := "a" + string(service.UID)
+	ret = strings.Replace(ret, "-", "", -1)
+	//AWS requires that the name of a load balancer is shorter than 32 bytes.
+	if len(ret) > 32 {
+		ret = ret[:32]
+	}
+	return ret
+}
+
+func LogSubsetInfo(endpoint *v1.Endpoints, version string) {
+	if endpoint == nil {
+		klog.Error("endpoint is nil")
+		return
+	}
+	for i, ep := range endpoint.Subsets {
+		klog.Infof("[%s/%s]: %s , Subset index=%d, port len=%d, ready len=%d, not ready len=%d",
+			endpoint.Namespace, endpoint.Name, version, i, len(ep.Ports), len(ep.Addresses), len(ep.NotReadyAddresses))
+	}
 }

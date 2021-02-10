@@ -1,5 +1,5 @@
 .idea
 build/cloud-controller-manager*
 projectFilesBackup/
-
+coverage.txt
 alicloud-controller-manager

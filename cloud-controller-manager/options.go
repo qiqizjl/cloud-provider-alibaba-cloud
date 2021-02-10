@@ -17,6 +17,8 @@ limitations under the License.
 package alicloud
 
 import (
+	"k8s.io/cloud-provider-alibaba-cloud/cloud-controller-manager/utils"
+	"k8s.io/klog"
 	"strconv"
 	"strings"
 	"unicode"
@@ -25,7 +27,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"github.com/denverdino/aliyungo/slb"
-	"github.com/golang/glog"
 	"k8s.io/api/core/v1"
 )
 
@@ -42,11 +43,26 @@ const (
 	// ServiceAnnotationPrivateZonePrefix private zone prefix
 	ServiceAnnotationPrivateZonePrefix = ServiceAnnotationPrefix + "private-zone-"
 
+	// ServiceAnnotationLoadBalancerAclStatus enable or disable acl on all listener
+	ServiceAnnotationLoadBalancerAclStatus = ServiceAnnotationLoadBalancerPrefix + "acl-status"
+
+	// ServiceAnnotationLoadBalancerAclID acl id
+	ServiceAnnotationLoadBalancerAclID = ServiceAnnotationLoadBalancerPrefix + "acl-id"
+
+	// ServiceAnnotationLoadBalancerAclType acl type, black or white
+	ServiceAnnotationLoadBalancerAclType = ServiceAnnotationLoadBalancerPrefix + "acl-type"
+
 	// ServiceAnnotationLoadBalancerProtocolPort protocol port
 	ServiceAnnotationLoadBalancerProtocolPort = ServiceAnnotationLoadBalancerPrefix + "protocol-port"
 
 	// ServiceAnnotationLoadBalancerAddressType loadbalancer address type
 	ServiceAnnotationLoadBalancerAddressType = ServiceAnnotationLoadBalancerPrefix + "address-type"
+
+	// ServiceAnnotationLoadBalancerVswitch loadbalancer vswitch id
+	ServiceAnnotationLoadBalancerVswitch = ServiceAnnotationLoadBalancerPrefix + "vswitch-id"
+
+	// ServiceAnnotationLoadBalancerForwardPort loadbalancer forward port
+	ServiceAnnotationLoadBalancerForwardPort = ServiceAnnotationLoadBalancerPrefix + "forward-port"
 
 	// ServiceAnnotationLoadBalancerSLBNetworkType loadbalancer network type
 	ServiceAnnotationLoadBalancerSLBNetworkType = ServiceAnnotationLoadBalancerPrefix + "slb-network-type"
@@ -55,6 +71,9 @@ const (
 
 	// ServiceAnnotationLoadBalancerId lb id
 	ServiceAnnotationLoadBalancerId = ServiceAnnotationLoadBalancerPrefix + "id"
+
+	//ServiceAnnotationLoadBalancerName slb name
+	ServiceAnnotationLoadBalancerName = ServiceAnnotationLoadBalancerPrefix + "name"
 
 	// ServiceAnnotationLoadBalancerBackendLabel backend labels
 	ServiceAnnotationLoadBalancerBackendLabel = ServiceAnnotationLoadBalancerPrefix + "backend-label"
@@ -116,6 +135,9 @@ const (
 	// ServiceAnnotationLoadBalancerSpec slb spec
 	ServiceAnnotationLoadBalancerSpec = ServiceAnnotationLoadBalancerPrefix + "spec"
 
+	// ServiceAnnotationLoadBalancerScheduler slb scheduler
+	ServiceAnnotationLoadBalancerScheduler = ServiceAnnotationLoadBalancerPrefix + "scheduler"
+
 	// ServiceAnnotationLoadBalancerSessionStick sticky session
 	ServiceAnnotationLoadBalancerSessionStick = ServiceAnnotationLoadBalancerPrefix + "sticky-session"
 
@@ -149,13 +171,41 @@ const (
 
 	// ServiceAnnotationLoadBalancerPrivateZoneRecordTTL private zone record ttl
 	ServiceAnnotationLoadBalancerPrivateZoneRecordTTL = ServiceAnnotationPrivateZonePrefix + "record-ttl"
+
+	// ServiceAnnotationLoadBalancerBackendType backend type
+	ServiceAnnotationLoadBalancerBackendType = utils.BACKEND_TYPE_LABEL
+
+	// ServiceAnnotationLoadBalancerResourceGroupId resource group id
+	ServiceAnnotationLoadBalancerResourceGroupId = ServiceAnnotationLoadBalancerPrefix + "resource-group-id"
+
+	// ServiceAnnotationLoadBalancerDeleteProtection delete protection
+	ServiceAnnotationLoadBalancerDeleteProtection = ServiceAnnotationLoadBalancerPrefix + "delete-protection"
+
+	// ServiceAnnotationLoadBalancerModificationProtection modification type
+	ServiceAnnotationLoadBalancerModificationProtection = ServiceAnnotationLoadBalancerPrefix + "modification-protection"
+
+	// ServiceAnnotationLoadBalancerBackendType external ip type
+	ServiceAnnotationLoadBalancerExternalIPType = ServiceAnnotationLoadBalancerPrefix + "external-ip-type"
+)
+
+type ExternalIPType string
+
+const (
+	EIPExternalIPType = ExternalIPType("eip")
 )
 
 //compatible to old camel annotation
+//If the old and new annotation coexist, the new version will take effect
 func getBackwardsCompatibleAnnotation(annotations map[string]string) map[string]string {
 	newAnnotation := make(map[string]string)
 	for k, v := range annotations {
-		newAnnotation[replaceCamel(normalizePrefix(k))] = v
+		newKey := replaceCamel(normalizePrefix(k))
+		if _, ok := newAnnotation[newKey]; ok {
+			if strings.HasPrefix(k, ServiceAnnotationLegacyPrefix) {
+				continue
+			}
+		}
+		newAnnotation[newKey] = v
 	}
 	return newAnnotation
 }
@@ -172,7 +222,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 			request.Bandwidth = i
 			defaulted.Bandwidth = i
 		} else {
-			glog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-bandwidth"+
+			klog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-bandwidth"+
 				" must be integer, but got [%s], default with no limit. message=[%s]\n",
 				bandwidth, err.Error())
 			defaulted.Bandwidth = DEFAULT_BANDWIDTH
@@ -187,6 +237,37 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 		request.AddressType = defaulted.AddressType
 	} else {
 		defaulted.AddressType = slb.InternetAddressType
+	}
+
+	vswid, ok := annotation[ServiceAnnotationLoadBalancerVswitch]
+	if ok {
+		defaulted.VswitchID = vswid
+		request.VswitchID = defaulted.VswitchID
+	}
+
+	status, ok := annotation[ServiceAnnotationLoadBalancerAclStatus]
+	if ok {
+		defaulted.AclStatus = status
+		request.AclStatus = defaulted.AclStatus
+	} else {
+		defaulted.AclStatus = "off"
+	}
+
+	aclid, ok := annotation[ServiceAnnotationLoadBalancerAclID]
+	if ok {
+		defaulted.AclID = aclid
+		request.AclID = defaulted.AclID
+	}
+	acltype, ok := annotation[ServiceAnnotationLoadBalancerAclType]
+	if ok {
+		defaulted.AclType = acltype
+		request.AclType = defaulted.AclType
+	}
+
+	forward, ok := annotation[ServiceAnnotationLoadBalancerForwardPort]
+	if ok {
+		defaulted.ForwardPort = forward
+		request.ForwardPort = defaulted.ForwardPort
 	}
 
 	networkType, ok := annotation[ServiceAnnotationLoadBalancerSLBNetworkType]
@@ -219,6 +300,12 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		defaulted.Loadbalancerid = lbid
 		request.Loadbalancerid = defaulted.Loadbalancerid
+	}
+
+	lbName, ok := annotation[ServiceAnnotationLoadBalancerName]
+	if ok {
+		defaulted.LoadBalancerName = lbName
+		request.LoadBalancerName = defaulted.LoadBalancerName
 	}
 
 	blabel, ok := annotation[ServiceAnnotationLoadBalancerBackendLabel]
@@ -267,7 +354,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		port, err := strconv.Atoi(healthCheckConnectPort)
 		if err != nil {
-			glog.Warningf("annotation service.beta.kubernetes.io/alicloud-"+
+			klog.Warningf("annotation service.beta.kubernetes.io/alicloud-"+
 				"loadbalancer-health-check-connect-port must be integer, but got [%s]. message=[%s]\n",
 				healthCheckConnectPort, err.Error())
 			//defaulted.HealthCheckConnectPort = MagicHealthCheckConnectPort
@@ -281,7 +368,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		thresh, err := strconv.Atoi(healthCheckHealthyThreshold)
 		if err != nil {
-			glog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-"+
+			klog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-"+
 				"health-check-healthy-threshold must be integer, but got [%s], use default number 3. message=[%s]\n",
 				healthCheckHealthyThreshold, err.Error())
 			//defaulted.HealthyThreshold = 3
@@ -295,7 +382,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		unThresh, err := strconv.Atoi(healthCheckUnhealthyThreshold)
 		if err != nil {
-			glog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-"+
+			klog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-"+
 				"health-check-unhealthy-threshold must be integer, but got [%s], use default number 3. message=[%s]\n",
 				healthCheckUnhealthyThreshold, err.Error())
 			//defaulted.UnhealthyThreshold = 3
@@ -309,7 +396,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		interval, err := strconv.Atoi(healthCheckInterval)
 		if err != nil {
-			glog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-"+
+			klog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-"+
 				"health-check-interval must be integer, but got [%s], use default number 2. message=[%s]\n",
 				healthCheckInterval, err.Error())
 			//defaulted.HealthCheckInterval = 2
@@ -323,7 +410,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		connout, err := strconv.Atoi(healthCheckConnectTimeout)
 		if err != nil {
-			glog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-"+
+			klog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-"+
 				"health-check-connect-timeout must be integer, but got [%s], use default number 5. message=[%s]\n",
 				healthCheckConnectTimeout, err.Error())
 			//defaulted.HealthCheckConnectTimeout = 5
@@ -337,7 +424,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		hout, err := strconv.Atoi(healthCheckTimeout)
 		if err != nil {
-			glog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-health-"+
+			klog.Warningf("annotation service.beta.kubernetes.io/alicloud-loadbalancer-health-"+
 				"check-timeout must be integer, but got [%s], use default number 5. message=[%s]\n",
 				healthCheckConnectTimeout, err.Error())
 			//defaulted.HealthCheckTimeout = 5
@@ -363,6 +450,16 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		defaulted.LoadBalancerSpec = slb.LoadBalancerSpecType(loadbalancerSpec)
 		request.LoadBalancerSpec = defaulted.LoadBalancerSpec
+	} else {
+		defaulted.LoadBalancerSpec = "slb.s1.small"
+	}
+
+	scheduler, ok := annotation[ServiceAnnotationLoadBalancerScheduler]
+	if ok {
+		defaulted.Scheduler = scheduler
+		request.Scheduler = defaulted.Scheduler
+	} else {
+		defaulted.Scheduler = "rr"
 	}
 
 	// stick session
@@ -371,7 +468,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 		request.StickySession = slb.FlagType(stickSession)
 		defaulted.StickySession = request.StickySession
 	} else {
-		request.StickySession = slb.FlagType(stickSession)
+		request.StickySession = slb.OffFlag
 		defaulted.StickySession = slb.OffFlag
 	}
 
@@ -387,11 +484,11 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		timeout, err := strconv.Atoi(persistenceTimeout)
 		if err != nil {
-			glog.Warningf("annotation persistence timeout must be integer, but got [%s]. message=[%s]\n",
+			klog.Warningf("annotation persistence timeout must be integer, but got [%s]. message=[%s]\n",
 				persistenceTimeout, err.Error())
 			//defaulted.PersistenceTimeout = 0
 		} else {
-			defaulted.PersistenceTimeout = timeout
+			defaulted.PersistenceTimeout = &timeout
 			request.PersistenceTimeout = defaulted.PersistenceTimeout
 		}
 	}
@@ -399,7 +496,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		timeout, err := strconv.Atoi(cookieTimeout)
 		if err != nil {
-			glog.Warningf("annotation persistence timeout must be integer, but got [%s]. message=[%s]\n",
+			klog.Warningf("annotation persistence timeout must be integer, but got [%s]. message=[%s]\n",
 				cookieTimeout, err.Error())
 			//defaulted.CookieTimeout = 0
 		} else {
@@ -442,7 +539,7 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 	if ok {
 		ttl, err := strconv.Atoi(privateZoneRecordTTL)
 		if err != nil {
-			glog.Warningf("annotation "+ServiceAnnotationLoadBalancerPrivateZoneRecordTTL+
+			klog.Warningf("annotation "+ServiceAnnotationLoadBalancerPrivateZoneRecordTTL+
 				" must be integer, but got [%s], use default number 60. message=[%s]\n",
 				privateZoneRecordTTL, err.Error())
 			defaulted.PrivateZoneRecordTTL = 60
@@ -450,6 +547,52 @@ func ExtractAnnotationRequest(service *v1.Service) (*AnnotationRequest, *Annotat
 			defaulted.PrivateZoneRecordTTL = ttl
 			request.PrivateZoneRecordTTL = defaulted.PrivateZoneRecordTTL
 		}
+	}
+
+	backendType, ok := annotation[ServiceAnnotationLoadBalancerBackendType]
+	if ok {
+		request.BackendType = backendType
+		defaulted.BackendType = request.BackendType
+	} else {
+		defaulted.BackendType = utils.BACKEND_TYPE_ECS
+		request.BackendType = defaulted.BackendType
+	}
+
+	removeUnscheduledBackend, ok := annotation[utils.ServiceAnnotationLoadBalancerRemoveUnscheduledBackend]
+	if ok {
+		request.RemoveUnscheduledBackend = removeUnscheduledBackend
+		defaulted.RemoveUnscheduledBackend = request.RemoveUnscheduledBackend
+	} else {
+		defaulted.RemoveUnscheduledBackend = "off"
+		request.RemoveUnscheduledBackend = defaulted.RemoveUnscheduledBackend
+	}
+
+	resourceGroupId, ok := annotation[ServiceAnnotationLoadBalancerResourceGroupId]
+	if ok {
+		request.ResourceGroupId = resourceGroupId
+		defaulted.ResourceGroupId = request.ResourceGroupId
+	}
+
+	delProtection, ok := annotation[ServiceAnnotationLoadBalancerDeleteProtection]
+	if ok {
+		defaulted.DeleteProtection = slb.FlagType(delProtection)
+		request.DeleteProtection = defaulted.DeleteProtection
+	} else {
+		defaulted.DeleteProtection = slb.OnFlag
+	}
+
+	modificationProtection, ok := annotation[ServiceAnnotationLoadBalancerModificationProtection]
+	if ok {
+		request.ModificationProtectionStatus = slb.ModificationProtectionType(modificationProtection)
+		defaulted.ModificationProtectionStatus = request.ModificationProtectionStatus
+	} else {
+		defaulted.ModificationProtectionStatus = slb.ConsoleProtection
+	}
+
+	externalIpType, ok := annotation[ServiceAnnotationLoadBalancerExternalIPType]
+	if ok {
+		request.ExternalIPType = externalIpType
+		defaulted.ExternalIPType = request.ExternalIPType
 	}
 
 	return defaulted, request
@@ -538,13 +681,13 @@ func PrettyJson(obj interface{}) string {
 	pretty := bytes.Buffer{}
 	data, err := json.Marshal(obj)
 	if err != nil {
-		glog.Errorf("PrettyJson, mashal error: %s\n", err.Error())
+		klog.Errorf("PrettyJson, mashal error: %s\n", err.Error())
 		return ""
 	}
 	err = json.Indent(&pretty, data, "", "    ")
 
 	if err != nil {
-		glog.Errorf("PrettyJson, indent error: %s\n", err.Error())
+		klog.Errorf("PrettyJson, indent error: %s\n", err.Error())
 		return ""
 	}
 	return pretty.String()
